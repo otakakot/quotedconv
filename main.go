@@ -18,9 +18,108 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 )
+
+type collectorError struct {
+	mu     sync.Mutex
+	errors []error
+}
+
+func (ec *collectorError) Add(err error) {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+	ec.errors = append(ec.errors, err)
+}
+
+func (ec *collectorError) HasErrors() bool {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+
+	return len(ec.errors) > 0
+}
+
+func (ec *collectorError) Error() string {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+
+	errStrings := make([]string, 0, len(ec.errors))
+
+	for _, err := range ec.errors {
+		errStrings = append(errStrings, err.Error())
+	}
+
+	return strings.Join(errStrings, "\n")
+}
+
+type workerPool struct {
+	wg             sync.WaitGroup
+	jobChan        chan string
+	numWorkers     int
+	ctx            context.Context
+	collectorError *collectorError
+	processedFiles int32
+}
+
+func newWorkerPool(ctx context.Context, numWorkers int) *workerPool {
+	if numWorkers <= 0 {
+		numWorkers = runtime.NumCPU()
+	}
+
+	const chanSize = 2
+
+	return &workerPool{
+		wg:         sync.WaitGroup{},
+		jobChan:    make(chan string, numWorkers*chanSize),
+		numWorkers: numWorkers,
+		ctx:        ctx,
+		collectorError: &collectorError{
+			mu:     sync.Mutex{},
+			errors: []error{},
+		},
+		processedFiles: 0,
+	}
+}
+
+func (wp *workerPool) Start() {
+	for range wp.numWorkers {
+		wp.wg.Add(1)
+
+		go func() {
+			defer wp.wg.Done()
+
+			for filePath := range wp.jobChan {
+				if isCancelled(wp.ctx) {
+					return
+				}
+
+				err := fixFile(wp.ctx, filePath)
+				if err != nil && !errors.Is(err, context.Canceled) {
+					wp.collectorError.Add(fmt.Errorf("error processing file %s: %w", filePath, err))
+				} else if err == nil {
+					atomic.AddInt32(&wp.processedFiles, 1)
+				}
+			}
+		}()
+	}
+}
+
+func (wp *workerPool) AddJob(filePath string) {
+	wp.jobChan <- filePath
+}
+
+func (wp *workerPool) Wait() {
+	close(wp.jobChan)
+	wp.wg.Wait()
+}
+
+func (wp *workerPool) GetProcessedCount() int {
+	return int(atomic.LoadInt32(&wp.processedFiles))
+}
 
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -28,7 +127,9 @@ func main() {
 
 	root := getTargetPath()
 
-	if err := processPath(ctx, root); err != nil && !errors.Is(err, context.Canceled) {
+	numWorkers := runtime.NumCPU()
+
+	if err := processPath(ctx, root, numWorkers); err != nil && !errors.Is(err, context.Canceled) {
 		panic("Error: " + err.Error())
 	}
 }
@@ -46,17 +147,20 @@ func getTargetPath() string {
 	return cwd
 }
 
-func processPath(ctx context.Context, path string) error {
+func processPath(ctx context.Context, path string, numWorkers int) error {
 	info, err := os.Stat(path)
 	if err != nil {
 		return fmt.Errorf("stat path: %w", err)
 	}
 
 	if info.IsDir() {
+		files := []string{}
+
 		if err = filepath.WalkDir(path, func(pathStr string, dir fs.DirEntry, err error) error {
 			if err != nil {
 				return fmt.Errorf("walking directory: %w", err)
 			}
+
 			if dir.IsDir() || !strings.HasSuffix(pathStr, ".go") {
 				return nil
 			}
@@ -65,9 +169,31 @@ func processPath(ctx context.Context, path string) error {
 				return fmt.Errorf("context error: %w", ctx.Err())
 			}
 
-			return fixFile(ctx, pathStr)
+			files = append(files, pathStr)
+
+			return nil
 		}); err != nil {
 			return fmt.Errorf("walking directory: %w", err)
+		}
+
+		pool := newWorkerPool(ctx, numWorkers)
+
+		pool.Start()
+
+		for _, file := range files {
+			if isCancelled(ctx) {
+				break
+			}
+
+			pool.AddJob(file)
+		}
+
+		pool.Wait()
+
+		log.Printf("Successfully processed %d files", pool.GetProcessedCount())
+
+		if pool.collectorError.HasErrors() {
+			return fmt.Errorf("errors occurred during processing: %w", pool.collectorError)
 		}
 
 		return nil
