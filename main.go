@@ -54,8 +54,11 @@ func processPath(ctx context.Context, path string) error {
 
 	if info.IsDir() {
 		if err = filepath.WalkDir(path, func(pathStr string, dir fs.DirEntry, err error) error {
-			if err != nil || dir.IsDir() || !strings.HasSuffix(pathStr, ".go") {
+			if err != nil {
 				return fmt.Errorf("walking directory: %w", err)
+			}
+			if dir.IsDir() || !strings.HasSuffix(pathStr, ".go") {
+				return nil
 			}
 
 			if isCancelled(ctx) {
@@ -91,13 +94,31 @@ func fixFile(ctx context.Context, filename string) error {
 		return fmt.Errorf("read file: %w", err)
 	}
 
+	file, fset, err := parseGoFile(filename, src)
+	if err != nil {
+		return err
+	}
+
+	changed := processAST(ctx, file)
+	if !changed {
+		return nil
+	}
+
+	return writeFormattedFile(filename, fset, file)
+}
+
+func parseGoFile(filename string, src []byte) (*ast.File, *token.FileSet, error) {
 	fset := token.NewFileSet()
 
 	file, err := parser.ParseFile(fset, filename, src, parser.ParseComments)
 	if err != nil {
-		return fmt.Errorf("parse file: %w", err)
+		return nil, nil, fmt.Errorf("parse file: %w", err)
 	}
 
+	return file, fset, nil
+}
+
+func processAST(ctx context.Context, file *ast.File) bool {
 	changed := false
 
 	ast.Inspect(file, func(n ast.Node) bool {
@@ -119,10 +140,10 @@ func fixFile(ctx context.Context, filename string) error {
 		return true
 	})
 
-	if !changed {
-		return nil
-	}
+	return changed
+}
 
+func writeFormattedFile(filename string, fset *token.FileSet, file *ast.File) error {
 	var buf strings.Builder
 	if err := printer.Fprint(&buf, fset, file); err != nil {
 		return fmt.Errorf("print file: %w", err)
