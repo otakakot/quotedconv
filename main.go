@@ -247,6 +247,16 @@ func parseGoFile(filename string, src []byte) (*ast.File, *token.FileSet, error)
 func processAST(ctx context.Context, file *ast.File) bool {
 	changed := false
 
+	tagPositions := make(map[token.Pos]bool)
+
+	ast.Inspect(file, func(n ast.Node) bool {
+		if field, ok := n.(*ast.Field); ok && field.Tag != nil {
+			tagPositions[field.Tag.Pos()] = true
+		}
+
+		return true
+	})
+
 	ast.Inspect(file, func(n ast.Node) bool {
 		if isCancelled(ctx) {
 			return false
@@ -254,6 +264,10 @@ func processAST(ctx context.Context, file *ast.File) bool {
 
 		lit, ok := n.(*ast.BasicLit)
 		if !ok || lit.Kind != token.STRING {
+			return true
+		}
+
+		if tagPositions[lit.Pos()] {
 			return true
 		}
 
