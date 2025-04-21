@@ -1,23 +1,18 @@
 # QuotedConv
 
-QuotedConv is a command-line tool written in Go for processing Go source files. It automatically converts eligible raw string literals (backtick-quoted strings) into interpreted string literals (double-quoted strings) to enforce consistent formatting and simplify code maintenance.
+This project provides a tool for converting backtick-quoted raw string literals into interpreted string literals (double-quoted strings) based on specific criteria.
 
-## Features
+## Conversion Rules
 
-- **AST-Based Processing:**  
-  Uses Go's parser and abstract syntax tree (AST) to reliably locate and transform raw string literals in Go source code.
+The tool converts a raw string literal (i.e. a backtick-quoted string) to an interpreted string literal (double-quoted) only if all of the following conditions are met:
 
-- **Selective Conversion:**  
-  Converts raw string literals only if they meet specific criteria: the string must be single-line and must not contain newline characters, backticks, or escape sequences.
+- **No Newlines:** The string literal does not contain any newline characters.
+- **No Backticks:** The literal does not contain any additional backtick characters.
+- **No Backslashes:** The literal does not include any backslashes.
+- **No Double Quotes:** The literal does not contain any double quote characters.
+- **Not a Struct Tag:** The literal is not part of a struct tag (this is determined via syntactic analysis of the Go AST).
 
-- **Recursive Directory Traversal:**  
-  Can process a single Go file or recursively traverse directories to update all `.go` files.
-
-- **Graceful Interruption:**  
-  Implements context cancellation (via `os.Interrupt`) to allow the operation to be stopped cleanly during long-running tasks.
-
-- **Automatic Code Formatting:**  
-  After modifying a file, the tool formats the code using Go's `go/format` package to ensure adherence to Go coding standards.
+String literals that do not satisfy these conditions remain unchanged.
 
 ## Getting Started
 
