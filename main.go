@@ -309,6 +309,9 @@ func shouldConvertLiteral(value string) bool {
 	}
 
 	content := value[1 : len(value)-1]
+	if strings.Contains(content, "\"") {
+		return false
+	}
 
 	return !strings.ContainsAny(content, "\n`\\")
 }
