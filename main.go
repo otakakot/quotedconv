@@ -62,6 +62,9 @@ func processPath(ctx context.Context, path string, numWorkers int) error {
 			if err != nil {
 				return fmt.Errorf("walking directory: %w", err)
 			}
+			if dir.IsDir() && dir.Name() == "vendor" {
+				return filepath.SkipDir
+			}
 
 			if dir.IsDir() || !strings.HasSuffix(pathStr, ".go") {
 				return nil
